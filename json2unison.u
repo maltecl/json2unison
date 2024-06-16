@@ -1,0 +1,354 @@
+unique type Record = Record [(Text, UnisonType Record)]
+
+unique type NamedRecord = NamedRecord Text [(Text, UnisonType NamedRecord)] 
+
+unique type UnisonType record = 
+    Text | 
+    Float |
+    Nat | 
+    Boolean | 
+    Int | 
+    List (UnisonType record) | 
+    Undecidable |
+    TRecord record | 
+    Optional (UnisonType record) | 
+    OptionalRecordField (UnisonType record) | 
+    UnificationError (UnisonType record) (UnisonType record)
+
+between : Text->Text -> Text -> Text
+between l r t= l ++ t ++ r 
+
+parens : Text -> Text
+parens = between "(" ")"
+
+string : Text -> Text
+string = between "\"" "\""
+
+indent : Nat -> Text -> Text
+indent n t =
+    indent' n t = Text.repeat n " " ++ t
+    base.Text.lines t 
+        |> List.map (indent' n)
+        |> base.Text.join "\n"
+
+codeBlock : [[Text]] -> Text 
+codeBlock rows = 
+    rows 
+        |> List.map unwords 
+        |> unlines 
+
+UnisonType.toSourceString : UnisonType NamedRecord -> {Stream Text} Text
+UnisonType.toSourceString = cases
+    UnificationError _ _  -> "_UnificationError"   
+    Text ->  "Text"
+    Nat ->  "Nat"
+    Int ->  "Int"
+    Float ->  "Float"
+    Boolean ->  "Boolean"
+    Undecidable ->  "_Undecidable"
+    Optional type_@(Optional _) -> "Optional " ++ parens (toSourceString type_)
+    Optional type_ -> "Optional " ++ toSourceString type_
+    OptionalRecordField type_ -> toSourceString <| Optional type_
+    List t -> between "[" "]" <| toSourceString t
+    TRecord (NamedRecord recordName fields) -> 
+        fieldToSource = cases 
+                (name, type_) -> name ++ ": " ++ toSourceString type_ 
+
+        fieldsSource = 
+            List.map fieldToSource fields 
+                |> Text.join ",\n"
+
+
+        emit <| codeBlock [
+            ["unique type", recordName, " = {"], 
+            [indent 2 fieldsSource], 
+            ["}"],
+        ]
+        
+        recordName
+
+{{ also sanitizes field-names }}
+UnisonType.assignRecordNames : UnisonType Record -> {Ask Text} UnisonType NamedRecord 
+UnisonType.assignRecordNames = cases
+    UnificationError t1 t2 -> UnificationError (assignRecordNames t1) (assignRecordNames t2)
+    Text -> Text
+    Nat -> Nat
+    Int -> Int
+    Float -> Float
+    Boolean -> Boolean
+    Undecidable -> Undecidable
+    Optional type_ -> Optional <| assignRecordNames type_
+    OptionalRecordField type_ -> OptionalRecordField <| assignRecordNames type_
+    List t -> List <| assignRecordNames t
+    TRecord record@(Record fields) -> 
+        fields 
+            |> List.map cases (name, type_) -> 
+                    ( sanitizeUnisonReservedNames <| camelToSnakeCase name
+                    , assignRecordNames type_
+                    )
+            |> NamedRecord ask 
+            |> TRecord
+
+Ask.provideStream : '{Stream a, eff1} Void -> '{Ask a, eff2} b -> {eff1, eff2} b 
+Ask.provideStream values c = 
+    handle !c with cases 
+        {value} -> value
+        {ask -> resumeAsk} -> 
+            handle !values with cases
+                {emit value -> resumeStream} -> 
+                    Ask.provideStream (resumeStream) (do resumeAsk value) 
+
+camelToSnakeCase : Text -> Text
+camelToSnakeCase t = 
+    match base.Text.split ?_ t with 
+        [] -> t 
+        head +: tail -> 
+            firstCharToUpper : Text -> Text 
+            firstCharToUpper t = 
+                match Text.uncons t with 
+                    None -> t
+                    Some (first, rest) -> Text.cons (Char.toUppercase first) rest  
+
+            head ++ Text.join "" (List.map firstCharToUpper tail)
+
+sanitizeUnisonReservedNames : Text -> Text 
+sanitizeUnisonReservedNames = cases 
+    "type" -> "type_"
+    "unique" -> "unique_"
+    "handle" -> "handle_"
+    "cases" -> "cases_"
+    "match" -> "match_"
+    t -> t
+
+UnisonType.unify : UnisonType Record -> UnisonType Record -> UnisonType Record
+UnisonType.unify = cases 
+    Undecidable, x -> x 
+    x, Undecidable -> x 
+
+    Optional x, Optional y -> Optional <| unify x y
+    Optional x, y -> Optional <| unify x y 
+    y, Optional x -> Optional <| unify x y 
+
+    OptionalRecordField x, OptionalRecordField y -> OptionalRecordField <| unify x y
+    OptionalRecordField x, y -> OptionalRecordField <| unify x y 
+    y, OptionalRecordField x -> OptionalRecordField <| unify x y 
+
+    List x, List y -> List <| unify x y
+
+    TRecord (Record fields1), TRecord (Record fields2) -> 
+        m1 = Map.fromList fields1
+        m2 = Map.fromList fields2
+
+
+        diff m1 m2 = Map.union (Map.difference m1 m2) (Map.difference m2 m1)  
+
+        markType = cases 
+            OptionalRecordField t -> OptionalRecordField t 
+            t -> OptionalRecordField t 
+
+        unifiedDifference = Map.map markType <| diff m1 m2 
+
+        Map.unionWith unify m1 m2
+            |> Map.union unifiedDifference -- Map.union will use unifiedDifference elements over (Map.unionWith unify m1 m2) on conflict
+            |> Map.toList
+            |> Record 
+            |> TRecord 
+
+    Float, x | elem x [Nat, Float, Int] -> Float
+    x, Float | elem x [Nat, Float, Int] -> Float
+
+    Nat, Int -> Int 
+    Int, Nat -> Int 
+    
+    x, y | Universal.eq x y -> x
+    x, y -> UnificationError x y 
+
+
+
+mkRec t = TRecord <| Record [("z", t)]
+
+> unify (mkRec (Optional Undecidable)) (mkRec <| List (Optional Undecidable))
+    |> unify (mkRec <| List Nat)
+
+> unify (TRecord <| Record [("z", Nat)]) (TRecord <| Record [])
+
+
+json2Unison : Json -> UnisonType Record 
+json2Unison = cases 
+    Null -> Optional Undecidable
+    Json.Boolean bool -> Boolean
+    Object fields -> TRecord <| Record (
+            flip data.List.map fields cases 
+                    (name, jsonValue) -> (name, json2Unison jsonValue)
+    )
+    Number.Unparsed text ->
+        if isSome <| Nat.fromText text then 
+            Nat 
+        else if isSome <| Int.fromText text then 
+            Int
+        else  
+            Float
+
+    Json.Text text -> Text 
+
+    Array elems -> 
+        List.map json2Unison elems 
+            |> List.foldLeft unify UnisonType.Undecidable  
+            |> List
+
+UnisonType.unwrapNamedRecord : UnisonType NamedRecord -> Optional NamedRecord 
+UnisonType.unwrapNamedRecord = cases
+    TRecord record -> Some record 
+    _ -> None 
+
+Text.unlines : [Text] -> Text
+Text.unlines = Text.join "\n"
+Text.unwords : [Text] -> Text
+Text.unwords = Text.join " "
+
+NamedRecord.makeDecoder : NamedRecord -> {Stream Text} Text 
+NamedRecord.makeDecoder = cases 
+    NamedRecord name fields ->
+        fieldNames = unwords <| List.map at1 fields 
+        fieldDecoders =
+            fields 
+                |> List.map cases (name, type_) -> name ++ " = object.at! \"" ++ name ++ "\" " ++ UnisonType.makeDecoder type_ 
+                |> unlines 
+
+        emit <| codeBlock [
+            [name ++ ".decoder : '{Decoder}", name],
+            [name ++ ".decoder = do"],
+            [indent 2 fieldDecoders],
+            [indent 2 <| name,  fieldNames,],
+        ]
+        name ++ ".decoder"
+
+UnisonType.makeDecoder : UnisonType NamedRecord -> {Stream Text} Text 
+UnisonType.makeDecoder = cases
+    UnificationError t1 t2 -> parens <| unwords ["could not unify", Stream.drain do toSourceString t1, " with ", Stream.drain do toSourceString t2]
+    Text -> "Decoder.text"
+    Nat -> "Decoder.nat"
+    Int -> "Decoder.int"
+    Float -> "Decoder.float"
+    Boolean -> "Decoder.boolean"
+    Undecidable -> "_UndecidableDecoder"
+    Optional type_ -> parens ("Decoder.optional " ++ parens (UnisonType.makeDecoder type_))
+    OptionalRecordField type_ -> makeDecoder <| Optional type_
+    List t ->  parens ("Decoder.array " ++ UnisonType.makeDecoder t)
+    TRecord record -> NamedRecord.makeDecoder record
+ 
+NamedRecord.makeEncoder : NamedRecord -> {Stream Text} Text 
+NamedRecord.makeEncoder = cases 
+    NamedRecord name fields -> 
+        fieldNames = List.map at1 fields
+
+        fieldDecoders = 
+            fields 
+                |> List.map cases (name, type_) -> parens (string name ++ ", " ++ UnisonType.makeEncoder type_ ++ " " ++ name)
+                |> Text.join ",\n" 
+
+        emit <| codeBlock [
+            [name ++ ".encoder :", name, "-> Json"],
+            [name ++ ".encoder = cases"],
+            [indent 2 name, unwords fieldNames, "-> Json.object ["],
+            [indent 4 fieldDecoders],
+            [indent 2 "]"],
+        ]
+
+        name ++".encoder"
+
+UnisonType.makeEncoder : UnisonType NamedRecord -> {Stream Text} Text 
+UnisonType.makeEncoder = cases
+    UnificationError t1 t2 -> parens <| unwords ["could not unify", Stream.drain do toSourceString t1, " with ", Stream.drain do toSourceString t2]
+    Text -> "Json.text"
+    Nat -> "(Json.Number.Unparsed << Nat.toText)"
+    Int -> "(Json.Number.Unparsed << Int.toText)"
+    Float -> "(Json.Number.Unparsed << Float.toText)"
+    Boolean -> "Json.boolean"
+    Undecidable -> "_UndecidableEncoder"
+    Optional innerType -> parens ("Optional.getOrElse Json.null << Optional.map " ++ parens (UnisonType.makeEncoder innerType))
+    OptionalRecordField innerType -> makeEncoder <| Optional innerType
+    List t ->  parens ("Json.array << List.map " ++  parens (UnisonType.makeEncoder t))
+    TRecord record -> NamedRecord.makeEncoder record
+
+html.row : [Html] -> Html
+html.row = div [Attribute "style" "display: flex; flex-direction: row; justify-content: center;"]  
+
+http.indexPageHandler : Text -> HttpRequest -> {Log, Exception} HttpResponse
+http.indexPageHandler root = cases 
+    HttpRequest POST _ _ _ body -> 
+      info "/toUnison" []
+      names = base_2_10_0.data.Stream.map (Nat.toText >> (++) "Type") Stream.naturals
+      namedUnisonType =
+        provideStream names do 
+            Body.toBytes body
+                |> Text.fromUtf8
+                |> Json.tryFromText
+                |> Either.mapRight (json2Unison >> assignRecordNames >> UnisonType.unwrapNamedRecord)
+
+
+      match namedUnisonType with 
+        Left (ParseError t1 nat1 t2) ->
+            HttpResponse.error 
+        Right None -> HttpResponse.error
+        Right (Some record) ->
+            fullSourceText = 
+                Stream.toList! do 
+                    ignore <| toSourceString (TRecord record)
+                    ignore <| NamedRecord.makeDecoder record
+                    ignore <| NamedRecord.makeEncoder record
+            
+            fullSourceText
+                |> Text.join "\n\n"
+                |> Text.toUtf8
+                |> Body 
+                |> HttpResponse.ok
+    _ -> 
+      info "/" []
+      toUnisonPath = string (root ++ "/toUnison")
+      html [] [ 
+        row [h1 [] [ text "json2unison"]],
+        row [
+          textarea [
+            Attribute.id "json",
+            Attribute "placeholder" "json",  
+            Attribute "style" "height: 700px; width: 48vw"
+          ] [],
+          textarea [
+            Attribute.id "unison",
+            Attribute "placeholder" "unison",
+            Attribute "style" "height: 700px; width: 48vw"
+          ] [],
+        ],
+        script []  [
+            [
+"""
+json.addEventListener("input", async (_) => {
+    console.log(json.value)
+    const response = await fetch(""", toUnisonPath ,""", {
+        method: "POST",
+        body: json.value,
+    });
+    if (response.status !== 200) return;
+    unison.value = await response.text();
+});
+""" 
+            ]
+                |> unwords 
+                |> TextElement 
+                |> Html "unsafe-text" [] 
+
+
+        ]
+      ]
+        |> toText 
+        |> Text.toUtf8
+        |> Body 
+        |> HttpResponse.ok
+
+http.deployment1 : '{IO, Exception} ()
+http.deployment1 = Cloud.main do
+  name = ServiceName.create "json2unison"
+  serviceHash = deployHttp !Environment.default (indexPageHandler "/s/json2unison")
+  base.ignore (ServiceName.assign name serviceHash)
+  printLine "Logs available at:\n  https://app.unison.cloud"
