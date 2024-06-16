@@ -212,7 +212,9 @@ NamedRecord.makeDecoder = cases
         fieldNames = unwords <| List.map at1 fields 
         fieldDecoders =
             fields 
-                |> List.map cases (name, type_) -> name ++ " = object.at! \"" ++ name ++ "\" " ++ UnisonType.makeDecoder type_ 
+                |> List.map cases 
+                    (name, OptionalRecordField type_) -> name ++ " = Decoder.optional! (do object.at! \"" ++ name ++ "\" " ++ UnisonType.makeDecoder type_ ++ ")"
+                    (name, type_) -> name ++ " = object.at! \"" ++ name ++ "\" " ++ UnisonType.makeDecoder type_ 
                 |> unlines 
 
         emit <| codeBlock [
@@ -233,7 +235,7 @@ UnisonType.makeDecoder = cases
     Boolean -> "Decoder.boolean"
     Undecidable -> "_UndecidableDecoder"
     Optional type_ -> parens ("Decoder.optional " ++ parens (UnisonType.makeDecoder type_))
-    OptionalRecordField type_ -> makeDecoder <| Optional type_
+    OptionalRecordField _ -> todo "impossible"
     List t ->  parens ("Decoder.array " ++ UnisonType.makeDecoder t)
     TRecord record -> NamedRecord.makeDecoder record
  
