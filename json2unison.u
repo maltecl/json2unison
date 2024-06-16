@@ -313,12 +313,12 @@ http.indexPageHandler root = cases
             Attribute.id "json",
             Attribute "placeholder" "json",  
             Attribute "style" "height: 700px; width: 48vw"
-          ] [],
+          ] [text example.jsonSource],
           textarea [
             Attribute.id "unison",
             Attribute "placeholder" "unison",
             Attribute "style" "height: 700px; width: 48vw"
-          ] [],
+          ] [text example.generatedCode],
         ],
         script []  [
             [
@@ -352,3 +352,123 @@ http.deployment1 = Cloud.main do
   serviceHash = deployHttp !Environment.default (indexPageHandler "/s/json2unison")
   base.ignore (ServiceName.assign name serviceHash)
   printLine "Logs available at:\n  https://app.unison.cloud"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+example.generatedCode = """
+unique type Type0  = {
+  level: Nat
+}
+
+unique type Type1  = {
+  text: Text,
+  type_: Text
+}
+
+unique type Type2  = {
+  attrs: Optional Type0,
+  content: Optional [Type1],
+  type_: Text
+}
+
+unique type Type3  = {
+  type_: Text,
+  content: [Type2]
+}
+
+Type0.decoder : '{Decoder} Type0
+Type0.decoder = do
+  level = object.at! "level" Decoder.nat
+  Type0 level
+
+Type1.decoder : '{Decoder} Type1
+Type1.decoder = do
+  text = object.at! "text" Decoder.text
+  type_ = object.at! "type_" Decoder.text
+  Type1 text type_
+
+Type2.decoder : '{Decoder} Type2
+Type2.decoder = do
+  attrs = object.at! "attrs" (Decoder.optional (Type0.decoder))
+  content = object.at! "content" (Decoder.optional ((Decoder.array Type1.decoder)))
+  type_ = object.at! "type_" Decoder.text
+  Type2 attrs content type_
+
+Type3.decoder : '{Decoder} Type3
+Type3.decoder = do
+  type_ = object.at! "type_" Decoder.text
+  content = object.at! "content" (Decoder.array Type2.decoder)
+  Type3 type_ content
+
+Type0.encoder : Type0 -> Json
+Type0.encoder = cases
+  Type0 level -> Json.object [
+    ("level", (Json.Number.Unparsed << Nat.toText) level)
+  ]
+
+Type1.encoder : Type1 -> Json
+Type1.encoder = cases
+  Type1 text type_ -> Json.object [
+    ("text", Json.text text),
+    ("type_", Json.text type_)
+  ]
+
+Type2.encoder : Type2 -> Json
+Type2.encoder = cases
+  Type2 attrs content type_ -> Json.object [
+    ("attrs", (Optional.getOrElse Json.null << Optional.map (Type0.encoder)) attrs),
+    ("content", (Optional.getOrElse Json.null << Optional.map ((Json.array << List.map (Type1.encoder)))) content),
+    ("type_", Json.text type_)
+  ]
+
+Type3.encoder : Type3 -> Json
+Type3.encoder = cases
+  Type3 type_ content -> Json.object [
+    ("type_", Json.text type_),
+    ("content", (Json.array << List.map (Type2.encoder)) content)
+  ]
+"""
+
+
+example.jsonSource = """
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 1
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "headline"
+        }
+      ]
+    },
+    {
+      "type": "paragraph"
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Some extra text here, all padding though."
+        }
+      ]
+    }
+  ]
+}
+"""
