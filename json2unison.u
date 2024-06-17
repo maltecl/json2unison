@@ -1,3 +1,10 @@
+README = {{ 
+# json2unison
+
+A small website for generating boilerplate code for dealing with json data hosted on [unison-cloud](https://maltecl.unison-services.cloud/s/json2unison/).
+ }}
+
+
 unique type Record = Record [(Text, UnisonType Record)]
 
 unique type NamedRecord = NamedRecord Text [(Text, UnisonType NamedRecord)] 
@@ -36,6 +43,9 @@ codeBlock rows =
     rows 
         |> List.map unwords 
         |> unlines 
+
+Stream.naturals : '{Stream Nat} Void
+Stream.naturals = Stream.iterate (x -> x+1) 0
 
 UnisonType.toSourceString : UnisonType NamedRecord -> {Stream Text} Text
 UnisonType.toSourceString = cases
@@ -269,7 +279,7 @@ UnisonType.makeEncoder = cases
     Boolean -> "Json.boolean"
     Undecidable -> "_UndecidableEncoder"
     Optional innerType -> parens ("Optional.getOrElse Json.null << Optional.map " ++ parens (UnisonType.makeEncoder innerType))
-    OptionalRecordField innerType -> makeEncoder <| Optional innerType
+    OptionalRecordField innerType -> UnisonType.makeEncoder <| Optional innerType
     List t ->  parens ("Json.array << List.map " ++  parens (UnisonType.makeEncoder t))
     TRecord record -> NamedRecord.makeEncoder record
 
@@ -280,7 +290,7 @@ http.indexPageHandler : Text -> HttpRequest -> {Log, Exception} HttpResponse
 http.indexPageHandler root = cases 
     HttpRequest POST _ _ _ body -> 
       info "/toUnison" []
-      names = base_2_10_0.data.Stream.map (Nat.toText >> (++) "Type") Stream.naturals
+      names = Stream.map (Nat.toText >> (++) "Type") Stream.naturals
       namedUnisonType =
         provideStream names do 
             Body.toBytes body
@@ -348,8 +358,8 @@ json.addEventListener("input", async (_) => {
         |> Body 
         |> HttpResponse.ok
 
-http.deployment1 : '{IO, Exception} ()
-http.deployment1 = Cloud.main do
+http.deploy : '{IO, Exception} ()
+http.deploy = Cloud.main do
   name = ServiceName.create "json2unison"
   serviceHash = deployHttp !Environment.default (indexPageHandler "/s/json2unison")
   base.ignore (ServiceName.assign name serviceHash)
